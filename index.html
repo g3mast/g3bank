@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>G3 Bank</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg:#10201c;--panel:#17302a;--line:#27463d;--text:#e9efe9;--mute:#8fa89f;--brass:#d2a64a;--ok:#6fcf97;--bad:#e8765f;
+--r:14px;font-family:-apple-system,"Segoe UI",Roboto,sans-serif}
+@media (prefers-color-scheme:light){:root{--bg:#f1f4ef;--panel:#fff;--line:#d9e1d8;--text:#14251f;--mute:#5d746b;--brass:#9a7314;--ok:#1f8a4c;--bad:#c4452e}}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--text);padding:env(safe-area-inset-top) 0 calc(env(safe-area-inset-bottom) + 72px);min-height:100vh;font-variant-numeric:tabular-nums}
+main{max-width:560px;margin:0 auto;padding:16px}
+.hero{padding:20px 4px 18px}
+.hero small{color:var(--mute);font-size:13px}
+.bal{font-size:40px;font-weight:700;letter-spacing:-.02em;margin:4px 0 2px;color:var(--brass);overflow-wrap:anywhere}
+.name{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:15px}
+.tag{font-size:12px;padding:2px 8px;border-radius:99px;border:1px solid var(--line);color:var(--mute)}
+.tag.p{color:var(--brass);border-color:var(--brass)}
+.alert{background:color-mix(in srgb,var(--bad) 16%,transparent);border:1px solid var(--bad);border-radius:var(--r);padding:12px 14px;margin-bottom:12px;font-size:14px}
+.sec{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:4px 16px;margin-bottom:14px}
+.sec h2{font-size:14px;color:var(--mute);font-weight:600;padding:12px 0 4px}
+.row{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-top:1px solid var(--line);font-size:15px}
+.sec h2+.row{border-top:0}
+.row .l{min-width:0}.row .l span{display:block;color:var(--mute);font-size:12.5px;margin-top:2px;overflow-wrap:anywhere}
+.row .v{white-space:nowrap;font-weight:600;text-align:right}
+.pos{color:var(--ok)}.neg{color:var(--bad)}
+.bar{height:6px;background:var(--line);border-radius:9px;overflow:hidden;margin:2px 0 12px}
+.bar i{display:block;height:100%;background:var(--brass)}
+.empty{color:var(--mute);padding:14px 0;font-size:14px}
+nav{position:fixed;left:0;right:0;bottom:0;display:flex;background:var(--panel);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom)}
+nav button{flex:1;background:none;border:0;color:var(--mute);padding:14px 4px;font-size:14px;font-family:inherit}
+nav button[aria-selected=true]{color:var(--brass);font-weight:700;box-shadow:inset 0 2px var(--brass)}
+nav button:focus-visible{outline:2px solid var(--brass);outline-offset:-4px}
+.state{text-align:center;color:var(--mute);padding:60px 20px;line-height:1.5}
+</style>
+</head>
+<body>
+<main id="app"><div class="state">Загрузка…</div></main>
+<nav id="tabs" hidden></nav>
+<script>
+// ВАЖНО: адрес вашего API (https!). Пример: https://api.example.com
+const API_URL = "https://g3mast.github.io/g3bank/";
+
+const tg = window.Telegram && Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+const $ = s => document.querySelector(s);
+const esc = t => String(t ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const num = n => Math.round(n).toLocaleString("ru-RU");
+const date = ts => ts ? new Date(ts * 1000).toLocaleString("ru-RU", {day:"2-digit",month:"2-digit",year:"2-digit",hour:"2-digit",minute:"2-digit"}) : "—";
+const day = ts => ts ? new Date(ts * 1000).toLocaleDateString("ru-RU") : "—";
+const signed = n => `<span class="${n >= 0 ? "pos" : "neg"}">${n >= 0 ? "+" : "−"}${num(Math.abs(n))}</span>`;
+
+const STATUS = {active:"активен",used:"использован",canceled:"отменён",hold:"на проверке",paid:"оплачен",repaid:"погашен",
+  overdue:"просрочен",forgiven:"прощён",unpaid:"не оплачен",postponed:"отсрочен",expired:"истекла",claimed:"выплачена",
+  pending:"на рассмотрении",frozen:"заморожен",closed:"закрыт",rejected:"отклонён"};
+const INS = {fine:"От штрафов",freeze:"От заморозки счёта",full:"Полная защита"};
+const st = s => STATUS[s] || s;
+
+let data = null, tab = "home";
+
+async function load() {
+  const headers = tg && tg.initData ? {Authorization: "tma " + tg.initData} : {};
+  let url = API_URL + "/api/me";
+  const dev = new URLSearchParams(location.search).get("user_id");
+  if (!headers.Authorization && dev) url += "?user_id=" + encodeURIComponent(dev);
+  try {
+    const r = await fetch(url, {headers});
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "Ошибка " + r.status);
+    data = await r.json();
+    render();
+  } catch (e) {
+    if (!data) $("#app").innerHTML = `<div class="state">Не удалось загрузить данные.<br>${esc(e.message)}<br><br>Проверьте соединение и откройте приложение заново.</div>`;
+  }
+}
+
+const rows = (list, fn, empty) => list.length ? list.map(fn).join("") : `<div class="empty">${empty}</div>`;
+const row = (l, sub, v) => `<div class="row"><div class="l">${l}${sub ? `<span>${sub}</span>` : ""}</div><div class="v">${v}</div></div>`;
+const sec = (title, body) => `<section class="sec"><h2>${title}</h2>${body}</section>`;
+
+const views = {
+  home(d) {
+    const u = d.user;
+    const lim = u.daily_limit;
+    const pct = lim ? Math.min(100, u.day_spent / lim * 100) : 0;
+    let h = "";
+    if (u.is_banned) h += `<div class="alert">Аккаунт заблокирован.</div>`;
+    if (u.is_frozen) h += `<div class="alert">Счёт заморожен${u.freeze_reason ? ": " + esc(u.freeze_reason) : ""}.</div>`;
+    if (u.tax_debt > 0) h += `<div class="alert">Налоговый долг: ${num(u.tax_debt)}${u.tax_due ? ", оплатить до " + date(u.tax_due) : ""}.</div>`;
+    h += sec("Лимит трат на сегодня", lim
+      ? `<div class="row"><div class="l">Потрачено</div><div class="v">${num(u.day_spent)} из ${num(lim)}</div></div><div class="bar"><i style="width:${pct}%"></i></div>`
+      : `<div class="row"><div class="l">Без ограничений</div><div class="v">∞</div></div>`);
+    h += sec("Итоги", [
+      row("Всего получено", "", `<span class="pos">${num(u.total_in)}</span>`),
+      row("Всего потрачено", "", `<span class="neg">${num(u.total_out)}</span>`),
+      row("Уплачено налогов", "", num(u.total_tax)),
+      row("Кэшбэк", "", num(u.cashback_earned)),
+      row("Место по балансу", "", "#" + d.rank),
+    ].join(""));
+    h += sec("Билеты", [
+      row("Куплено", "", num(d.tickets.count)),
+      row("Выигрышей", "", num(d.tickets.wins)),
+      row("Потрачено / выиграно", "", `${num(d.tickets.spent)} / ${num(d.tickets.won)}`),
+    ].join(""));
+    h += sec("Рефералы", row("Приглашено", "", num(u.ref_count)) + row("Заработано", "", num(u.ref_earned)));
+    return h;
+  },
+  history(d) {
+    return sec("Последние операции", rows(d.history, t =>
+      row(esc(t.type), `${date(t.created_at)}${t.comment ? " · " + esc(t.comment) : ""}`, signed(t.amount)), "Операций пока нет."));
+  },
+  finance(d) {
+    const u = d.user;
+    let h = sec("Кредиты", `<div class="row"><div class="l">Кредитный лимит</div><div class="v">${num(u.credit_limit)}</div></div>` +
+      rows(d.credits, c => row(`${num(c.amount)} · ${c.percent}%`, `взят ${day(c.taken_at)}, вернуть до ${day(c.due_at)}`,
+        `${num(c.paid)} / ${num(c.total + c.penalty)}<br><small>${st(c.status)}</small>`), "Кредитов нет."));
+    h += sec("Штрафы", rows(d.fines, f => row(esc(f.reason || "Штраф"), day(f.created_at),
+      `<span class="${f.status === "paid" ? "" : "neg"}">${num(f.amount)}</span><br><small>${st(f.status)}</small>`), "Штрафов нет."));
+    h += sec("Страховки", rows(d.insurances, i => row(INS[i.type] || i.type, `до ${day(i.valid_until)}`,
+      `${num(i.coverage)}<br><small>${st(i.status)}</small>`), "Страховок нет."));
+    return h;
+  },
+  more(d) {
+    let h = sec("Мои чеки", rows(d.checks, c => row(esc(c.code), `${date(c.created_at)}${c.is_multi ? ` · ${c.used_count}/${c.max_uses}` : ""}`,
+      `${num(c.amount)}<br><small>${st(c.status)}</small>`), "Чеков нет."));
+    h += sec("Счета", rows(d.invoices, i => row(esc(i.code), date(i.created_at),
+      `${num(i.amount)}<br><small>${st(i.status)}</small>`), "Счетов нет."));
+    h += sec("Благотворительность", rows(d.charity, c => row(esc(c.title), st(c.status),
+      `${num(c.collected)} / ${num(c.goal_amount)}`), "Сборов нет."));
+    h += sec("Кэшбэк", rows(d.cashback, c => row(esc(c.operation), `${date(c.created_at)} · ${c.percent}%`, signed(c.amount)), "Начислений нет."));
+    return h;
+  },
+};
+
+const TABS = [["home","Главная"],["history","История"],["finance","Финансы"],["more","Ещё"]];
+
+function render() {
+  const u = data.user;
+  const until = u.is_premium ? (u.premium_until ? "до " + day(u.premium_until) : "навсегда") : "";
+  const hero = `<div class="hero"><div class="name"><b>${esc(u.title)} ${esc(u.first_name || "Без имени")}</b>
+    ${u.username ? `<span class="tag">@${esc(u.username)}</span>` : ""}
+    ${u.is_premium ? `<span class="tag p">Премиум ${until}</span>` : ""}
+    ${u.verified ? `<span class="tag">Верифицирован</span>` : ""}</div>
+    <div class="bal">${num(u.balance)}</div><small>баллов на счёте · ID ${esc(u.custom_id || u.bot_id || u.user_id)}</small></div>`;
+  $("#app").innerHTML = hero + views[tab](data);
+  const nav = $("#tabs");
+  nav.hidden = false;
+  nav.innerHTML = TABS.map(([k, t]) => `<button data-t="${k}" aria-selected="${k === tab}">${t}</button>`).join("");
+  nav.querySelectorAll("button").forEach(b => b.onclick = () => { tab = b.dataset.t; render(); scrollTo(0, 0); });
+}
+
+load();
+setInterval(load, 20000);                       // данные обновляются сами
+document.addEventListener("visibilitychange", () => !document.hidden && load());
+</script>
+</body>
+</html>
